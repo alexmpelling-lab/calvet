@@ -16,10 +16,6 @@ export interface TravelBufferSuggestion {
 const MODE_LABEL = Object.fromEntries(TRAVEL_MODES.map((m) => [m.mode, m.label.toLowerCase()]))
 const MAX_GAP_HOURS = 3
 
-function sameCalendarDay(a: string, b: string): boolean {
-  return new Date(a).toDateString() === new Date(b).toDateString()
-}
-
 async function checkPair(
   earlier: CalendarEvent,
   later: CalendarEvent
@@ -30,8 +26,11 @@ async function checkPair(
   const gapStart = new Date(earlier.end.dateTime).getTime()
   const gapEnd = new Date(later.start.dateTime).getTime()
   const gapMinutes = (gapEnd - gapStart) / 60_000
+  // The gap-size bound below already covers "reasonably close together" —
+  // a separate same-calendar-day check on top of it used to wrongly reject
+  // a genuinely tight, legitimate gap that happens to cross midnight (an
+  // 11:30pm event followed by one at 12:15am), so it's dropped here.
   if (gapMinutes <= 0 || gapMinutes > MAX_GAP_HOURS * 60) return null
-  if (!sameCalendarDay(earlier.end.dateTime, later.start.dateTime)) return null
 
   const report = await checkFeasibility(earlier.location, later.location)
   if (!report.best) return null

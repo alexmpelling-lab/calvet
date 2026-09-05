@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
@@ -14,6 +14,11 @@ interface ChatPanelProps {
 
 export function ChatPanel({ messages, onSend, onClose, busy }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [messages, busy])
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -35,6 +40,7 @@ export function ChatPanel({ messages, onSend, onClose, busy }: ChatPanelProps) {
           </div>
         ))}
         {busy && <div className="chat-bubble assistant">…</div>}
+        <div ref={messagesEndRef} />
       </div>
       <form className="chat-input-row" onSubmit={handleSubmit}>
         <input

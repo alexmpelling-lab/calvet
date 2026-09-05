@@ -7,6 +7,11 @@ export interface Contact {
   notes?: string
   mentionCount: number
   lastMentioned: string
+  /** Names that have already been flagged as a possible duplicate of this
+   * contact and left unmerged — once the user has effectively said (by not
+   * merging) "these are different people," the same pair shouldn't keep
+   * getting re-asked about on every future mention. */
+  dismissedDuplicateNames?: string[]
 }
 
 const STORE = 'contacts'
@@ -26,17 +31,45 @@ function levenshtein(a: string, b: string): number {
   return dp[a.length][b.length]
 }
 
-/** Returns existing contacts whose name is close enough to be a possible duplicate. */
+/** A flat edit-distance threshold of 2 misfires on short names — "Al"/"Ed"
+ * or "Jon"/"Tom" are 2 edits apart and clearly different people, but the
+ * same distance on longer names ("Kristen"/"Kirsten") really is a likely
+ * typo of the same person. Scale the allowed distance with name length
+ * instead of using one fixed number for every name. */
+function isLikelyTypo(a: string, b: string): boolean {
+  const shorterLength = Math.min(a.length, b.length)
+  const distance = levenshtein(a, b)
+  if (shorterLength < 5) return distance <= 1
+  return distance <= 2
+}
+
+/** Returns existing contacts whose name is close enough to be a possible
+ * duplicate, excluding any pair the user has already effectively dismissed
+ * (mentioned again without merging) so the same ambiguity doesn't nag on
+ * every future mention. */
 export async function findPossibleDuplicates(name: string): Promise<Contact[]> {
   const all = await listContacts()
   const lower = name.trim().toLowerCase()
   return all.filter((c) => {
     if (c.name.toLowerCase() === lower) return false
+    if (c.dismissedDuplicateNames?.includes(lower)) return false
     const firstNameOnly = lower.split(' ')[0]
     const otherFirstName = c.name.toLowerCase().split(' ')[0]
     if (firstNameOnly === otherFirstName) return true
-    return levenshtein(lower, c.name.toLowerCase()) <= 2
+    return isLikelyTypo(lower, c.name.toLowerCase())
   })
+}
+
+/** Marks a candidate as "already asked about, left unmerged" for this exact
+ * name, so it stops being suggested as a duplicate for that name again. */
+async function dismissDuplicate(candidateId: string, name: string): Promise<void> {
+  const db = await getDb()
+  const candidate: Contact | undefined = await db.get(STORE, candidateId)
+  if (!candidate) return
+  const lower = name.trim().toLowerCase()
+  const dismissed = candidate.dismissedDuplicateNames ?? []
+  if (dismissed.includes(lower)) return
+  await db.put(STORE, { ...candidate, dismissedDuplicateNames: [...dismissed, lower] })
 }
 
 export async function listContacts(): Promise<Contact[]> {
@@ -49,10 +82,26 @@ export async function getContactByName(name: string): Promise<Contact | undefine
   return all.find((c) => c.name.toLowerCase() === name.trim().toLowerCase())
 }
 
+/** A first-name-only mention ("Jon") after someone was introduced with a
+ * full name ("Jon Smith") is almost always the same person, not a new one —
+ * without this, every later first-name-only mention fragments into its own
+ * separate contact instead of building up one person's mention history. Only
+ * consolidates when exactly one existing contact's name starts with the
+ * mentioned name as a whole word, so a genuine ambiguity (two Jons) still
+ * falls through to the normal duplicate-flagging path instead of guessing. */
+async function findUnambiguousFirstNameMatch(name: string): Promise<Contact | undefined> {
+  const trimmed = name.trim()
+  if (trimmed.includes(' ')) return undefined // already a fuller name, nothing to consolidate onto
+  const all = await listContacts()
+  const lower = trimmed.toLowerCase()
+  const matches = all.filter((c) => c.name.toLowerCase().split(' ')[0] === lower)
+  return matches.length === 1 ? matches[0] : undefined
+}
+
 /** Records a mention of a person, creating or updating their contact entry. */
 export async function recordMention(name: string, email?: string): Promise<Contact> {
   const db = await getDb()
-  const existing = await getContactByName(name)
+  const existing = (await getContactByName(name)) ?? (await findUnambiguousFirstNameMatch(name))
   const contact: Contact = existing
     ? { ...existing, email: email ?? existing.email, mentionCount: existing.mentionCount + 1, lastMentioned: new Date().toISOString() }
     : {
@@ -63,6 +112,15 @@ export async function recordMention(name: string, email?: string): Promise<Conta
         lastMentioned: new Date().toISOString(),
       }
   await db.put(STORE, contact)
+
+  if (!existing) {
+    // A brand new contact was created despite possible-duplicate candidates
+    // existing (the caller already surfaced those via findPossibleDuplicates)
+    // — mark them dismissed so this same overlap isn't re-flagged forever.
+    const duplicates = await findPossibleDuplicates(name)
+    await Promise.all(duplicates.map((d) => dismissDuplicate(d.id, name)))
+  }
+
   return contact
 }
 

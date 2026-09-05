@@ -57,7 +57,7 @@ export function parseTravelModePhrase(text: string): { mode: TravelMode; enabled
   const negated = /(don't|do not|no longer|stop|turn off|disable|can't|cannot)/.test(lower)
   const affirmed = /(turn on|enable|start|i do|i can)/.test(lower)
   for (const { mode, label } of TRAVEL_MODES) {
-    const keyword = mode === 'transit' ? 'transit|public transport|bus|train' : label.toLowerCase()
+    const keyword = mode === 'transit' ? 'transit|public transport|bus|train|subway|tube|metro' : label.toLowerCase()
     if (new RegExp(keyword).test(lower)) {
       return { mode, enabled: affirmed ? true : !negated }
     }

@@ -3,6 +3,10 @@ import { estimateTravel, type TravelEstimate } from './estimate'
 import { getEnabledModes, TRAVEL_MODES } from '../settings/travelSettings'
 import { isOnline } from '../calendar/syncEngine'
 
+function isGeocoded(place: Place): boolean {
+  return place.lat !== undefined && place.lng !== undefined
+}
+
 export interface FeasibilityReport {
   from: Place
   to: Place
@@ -43,10 +47,23 @@ export async function checkFeasibility(fromQuery: string, toQuery: string): Prom
 }
 
 /** Renders a feasibility report as a short, spoken-style summary for the
- * agent to read back — never raw JSON. */
+ * agent to read back — never raw JSON. Distinguishes *why* no estimate
+ * exists rather than one generic excuse, since "no routes with your
+ * settings" was actively misleading when the real cause was an
+ * unrecognized location and sent the user off fiddling with toggles that
+ * were never the problem. */
 export function summarizeFeasibility(report: FeasibilityReport): string {
   if (report.estimates.length === 0) {
-    return `I can't work out travel times to ${report.to.label} right now — no routes available with your current transport settings.`
+    if (getEnabledModes().length === 0) {
+      return "You've turned off every way of getting around in Settings — turn at least one back on and I can work this out."
+    }
+    if (!isGeocoded(report.from)) {
+      return `I don't recognize "${report.from.label}" as a place — could you give me a fuller address?`
+    }
+    if (!isGeocoded(report.to)) {
+      return `I don't recognize "${report.to.label}" as a place — could you give me a fuller address?`
+    }
+    return `I can't work out travel times between those two places right now — could you try again in a moment?`
   }
   const best = report.estimates[0]
   const minutesText = Math.round(best.minutes)

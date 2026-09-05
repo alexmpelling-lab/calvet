@@ -17,7 +17,12 @@ interface TravelCacheEntry extends TravelEstimate {
 }
 
 const STORE = 'travelCache'
-const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000 // 30 days — roads don't move often
+const ROUTED_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000 // 30 days — real routing, roads don't move often
+// A rough offline guess shouldn't get to squat on that same 30-day cache
+// slot — once back online, a real routed result should replace it almost
+// immediately rather than the app confidently repeating a straight-line
+// guess for a month after connectivity was available again.
+const ESTIMATED_CACHE_TTL_MS = 60 * 60 * 1000 // 1 hour
 
 // Rough urban average speeds, used when we can't reach a routing service.
 // A 1.3x fudge factor over straight-line distance approximates real road/path
@@ -85,7 +90,8 @@ async function getCached(fromPlaceId: string, toPlaceId: string, mode: TravelMod
   const db = await getDb()
   const entry: TravelCacheEntry | undefined = await db.get(STORE, cacheId(fromPlaceId, toPlaceId, mode))
   if (!entry) return null
-  if (Date.now() - entry.computedAt > CACHE_TTL_MS) return null
+  const ttl = entry.source === 'routed' ? ROUTED_CACHE_TTL_MS : ESTIMATED_CACHE_TTL_MS
+  if (Date.now() - entry.computedAt > ttl) return null
   return entry
 }
 

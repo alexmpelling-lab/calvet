@@ -24,7 +24,13 @@ export function isSpeechRecognitionSupported(): boolean {
   return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition)
 }
 
-/** Listens for a single spoken utterance and resolves with the transcript. */
+const LISTEN_TIMEOUT_MS = 15_000
+
+/** Listens for a single spoken utterance and resolves with the transcript.
+ * Guarantees the promise always settles: if the browser stops listening
+ * with no speech detected (silence), that previously left the caller
+ * hanging forever with the button stuck on "Listening…" — `onend` and a
+ * hard timeout both now resolve to an empty transcript instead. */
 export function listenOnce(): Promise<string> {
   return new Promise((resolve, reject) => {
     const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition
@@ -37,12 +43,34 @@ export function listenOnce(): Promise<string> {
     recognition.continuous = false
     recognition.interimResults = false
 
+    let settled = false
+    const finish = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeoutId)
+      fn()
+    }
+
+    const timeoutId = setTimeout(() => {
+      try {
+        recognition.stop()
+      } catch {
+        // already stopped
+      }
+      finish(() => reject(new Error("Didn't catch anything — try again.")))
+    }, LISTEN_TIMEOUT_MS)
+
     recognition.onresult = (event) => {
       const transcript = event.results[0]?.[0]?.transcript ?? ''
-      resolve(transcript)
+      finish(() => resolve(transcript))
     }
     recognition.onerror = (event) => {
-      reject(new Error(`Speech recognition error: ${(event as { error?: string }).error ?? 'unknown'}`))
+      finish(() => reject(new Error(`Speech recognition error: ${(event as { error?: string }).error ?? 'unknown'}`)))
+    }
+    recognition.onend = () => {
+      // Fires when the browser gives up with no result and no error (pure
+      // silence) — without this, the promise never settles.
+      finish(() => reject(new Error("Didn't catch anything — try again.")))
     }
     recognition.start()
   })
@@ -84,18 +112,50 @@ if (typeof window !== 'undefined' && window.speechSynthesis) {
 
 let neuralVoiceFailed = false
 
+// A failure might just be a flaky download or a momentary blip, not a
+// permanent "this browser can't do it" — re-arm the neural voice whenever
+// connectivity returns instead of downgrading to the robotic fallback for
+// the rest of the session over one bad attempt.
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    neuralVoiceFailed = false
+  })
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Timed out')), ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      }
+    )
+  })
+}
+
 /** Speaks a line in a calm, efficient secretary tone. Prefers the neural
  * Kokoro voice (natural pacing and prosody, runs fully offline once
  * downloaded); falls back to the browser's built-in speech synthesis if the
- * neural model fails to load or generate. */
+ * neural model fails to load, hangs, or fails to generate — so a stuck
+ * download or a rare generation failure can never leave the app silently
+ * frozen in the "speaking" state. A timeout only skips the neural voice for
+ * *this* turn (the download keeps going in the background and may be ready
+ * next turn); only a genuine rejection disables it until connectivity returns. */
 export async function speak(text: string, onModelProgress?: (fraction: number) => void): Promise<void> {
   if (!neuralVoiceFailed) {
     try {
       const { speakWithKokoro } = await import('./kokoroTts')
-      await speakWithKokoro(text, onModelProgress)
+      await withTimeout(speakWithKokoro(text, onModelProgress), 20_000)
       return
-    } catch {
-      neuralVoiceFailed = true
+    } catch (err) {
+      if (!(err instanceof Error && err.message === 'Timed out')) {
+        neuralVoiceFailed = true
+      }
     }
   }
   await speakWithBrowserVoice(text)

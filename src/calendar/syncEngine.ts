@@ -1,4 +1,5 @@
 import * as google from './googleCalendar'
+import { AuthExpiredError } from './googleCalendar'
 import {
   getAllLocalEvents,
   getLocalEventByAnyId,
@@ -9,7 +10,7 @@ import {
 } from '../db/eventsDb'
 import { isSignedIn } from '../auth/google'
 
-export type SyncStatus = 'signed-out' | 'offline' | 'syncing' | 'synced' | 'error'
+export type SyncStatus = 'signed-out' | 'offline' | 'syncing' | 'synced' | 'error' | 'needs-reauth'
 
 let status: SyncStatus = 'signed-out'
 const listeners = new Set<(status: SyncStatus) => void>()
@@ -69,7 +70,11 @@ async function pushOne(record: LocalEvent): Promise<void> {
 }
 
 /** Pushes every queued local change, in the order they were made. A failure
- * on one record leaves it queued and continues with the rest. */
+ * on one record leaves it queued and continues with the rest — except an
+ * expired session, which is re-thrown immediately: retrying every other
+ * queued record against a token that's already known to be dead just wastes
+ * time and reports a misleadingly generic "some changes failed" instead of
+ * the real, fixable cause. */
 export async function pushPending(): Promise<{ pushed: number; failed: number }> {
   const pending = await getPendingEvents()
   let pushed = 0
@@ -78,7 +83,8 @@ export async function pushPending(): Promise<{ pushed: number; failed: number }>
     try {
       await pushOne(record)
       pushed++
-    } catch {
+    } catch (err) {
+      if (err instanceof AuthExpiredError) throw err
       failed++
     }
   }
@@ -133,8 +139,12 @@ export async function sync(): Promise<void> {
       const { failed } = await pushPending()
       await pullFromGoogle()
       setStatus(failed > 0 ? 'error' : 'synced')
-    } catch {
-      setStatus(isOnline() ? 'error' : 'offline')
+    } catch (err) {
+      if (err instanceof AuthExpiredError) {
+        setStatus('needs-reauth')
+      } else {
+        setStatus(isOnline() ? 'error' : 'offline')
+      }
     } finally {
       syncInFlight = null
     }
@@ -142,15 +152,19 @@ export async function sync(): Promise<void> {
   return syncInFlight
 }
 
-let initialized = false
+let listenersAttached = false
 
-/** Wires up online/offline listeners and kicks off an initial sync. Call
- * once, after sign-in, from app startup. */
+/** Wires up online/offline listeners (once) and kicks off a sync — safe and
+ * cheap to call again after a fresh sign-in even within the same page
+ * session, since a stale `initialized` guard previously skipped that
+ * re-sync entirely and left the app showing pre-sign-out data until the
+ * next network blip happened to trigger one. */
 export function initSyncEngine(): void {
-  if (initialized) return
-  initialized = true
-  window.addEventListener('online', () => void sync())
-  window.addEventListener('offline', () => setStatus('offline'))
+  if (!listenersAttached) {
+    listenersAttached = true
+    window.addEventListener('online', () => void sync())
+    window.addEventListener('offline', () => setStatus('offline'))
+  }
   void sync()
 }
 

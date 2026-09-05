@@ -48,6 +48,10 @@ If a create_event or update_event tool result includes a "travelSuggestion", rel
 in your respond text, verbatim or close to it. If, in a later turn, the user agrees to add that travel block,
 call create_event using exactly the fields under that suggestion's "suggestedEvent".
 
+If a tool result comes back with an "error" field, do not retry the same action the same way — briefly explain
+in character what's needed instead (e.g. a clearer time, or trying again in a moment), the way a secretary
+would smooth over a small hiccup rather than repeating a technical message.
+
 Always end a turn with a "respond" action once you have what you need to answer the user.
 If a tool result is given to you, use it to compose the final "respond" text — do not repeat raw data verbatim,
 summarize it the way a secretary would.`
@@ -75,11 +79,40 @@ export function loadEngine(onProgress?: (report: webllm.InitProgressReport) => v
   return enginePromise
 }
 
+/** Finds the `}` that actually matches the first `{`, tracking brace depth
+ * and skipping over braces inside string literals. A small model sometimes
+ * wraps its JSON in a little chatty prose ("Sure! {...} Let me know!") —
+ * blindly taking the *last* `}` in the whole string (the old approach) grabs
+ * a brace from that trailing text instead of the object's real end, which
+ * fails to parse (or worse, silently parses a corrupted superset). */
+function findMatchingBrace(text: string, openIndex: number): number {
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = openIndex; i < text.length; i++) {
+    const ch = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) return i
+    }
+  }
+  return -1
+}
+
 function parseAction(raw: string): Record<string, unknown> | null {
   const trimmed = raw.trim().replace(/^```json/i, '').replace(/```$/, '').trim()
   const start = trimmed.indexOf('{')
-  const end = trimmed.lastIndexOf('}')
-  if (start === -1 || end === -1) return null
+  if (start === -1) return null
+  const end = findMatchingBrace(trimmed, start)
+  if (end === -1) return null
   try {
     return JSON.parse(trimmed.slice(start, end + 1))
   } catch {
@@ -87,16 +120,59 @@ function parseAction(raw: string): Record<string, unknown> | null {
   }
 }
 
+function isValidDateTime(value: unknown): value is string {
+  return typeof value === 'string' && !Number.isNaN(new Date(value).getTime())
+}
+
+/** Validates the start/end pair the model produced for an event before it
+ * ever reaches the local mirror or Google — an unparseable or backwards
+ * time range previously got queued anyway, synced-and-failed silently
+ * forever, and left the sync status permanently red with no indication of
+ * which event or why. */
+function validateEventTimes(start: unknown, end: unknown): string | null {
+  if (!isValidDateTime(start) || !isValidDateTime(end)) {
+    return "Sorry, I didn't get a clear time for that — could you give me a specific date and time?"
+  }
+  if (new Date(start).getTime() >= new Date(end).getTime()) {
+    return "That end time is before the start — could you double check the times?"
+  }
+  return null
+}
+
+// Tags a suggested travel block so a later create_event for it never
+// re-triggers suggestTravelBuffer against its own nonsense "A → B" location —
+// without this, confirming one suggestion could immediately spawn another,
+// nonsensical one comparing the travel block against its own neighbors.
+const TRAVEL_BLOCK_PREFIX = 'Travel to '
+
+/** Runs one tool call. Never throws — any failure (a network error mid
+ * geocode, an event id that no longer exists, a malformed action) is turned
+ * into a small error result the model can read and apologize for in
+ * character, instead of the whole turn crashing with a raw stack-trace-ish
+ * message shown straight to the user in the chat log. */
 async function runTool(action: Record<string, unknown>): Promise<{ toolResult: string; clarification?: AgentTurnResult['clarification'] }> {
+  try {
+    return await runToolUnsafe(action)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Something went wrong with that.'
+    return { toolResult: JSON.stringify({ error: message }) }
+  }
+}
+
+async function runToolUnsafe(action: Record<string, unknown>): Promise<{ toolResult: string; clarification?: AgentTurnResult['clarification'] }> {
   switch (action.action) {
     case 'list_events': {
       const events = await listUpcomingEvents(10)
       return { toolResult: JSON.stringify(events.map((e) => ({ id: e.id, summary: e.summary, start: e.start, end: e.end }))) }
     }
     case 'create_event': {
+      const timeError = validateEventTimes(action.start, action.end)
+      if (timeError) return { toolResult: JSON.stringify({ error: timeError }) }
+
+      const summary = String(action.summary ?? 'Untitled')
       const location = action.location ? String(action.location) : undefined
       const event = await createEvent({
-        summary: String(action.summary ?? 'Untitled'),
+        summary,
         description: action.description ? String(action.description) : undefined,
         location,
         start: { dateTime: String(action.start) },
@@ -108,7 +184,8 @@ async function runTool(action: Record<string, unknown>): Promise<{ toolResult: s
       // Build up place memory in the background — never blocks the reply.
       if (location) void recordVisit(location, event.start.dateTime)
 
-      const travelSuggestion = location ? await suggestTravelBuffer(event) : null
+      const isTravelBlock = summary.startsWith(TRAVEL_BLOCK_PREFIX)
+      const travelSuggestion = location && !isTravelBlock ? await suggestTravelBuffer(event) : null
       return {
         toolResult: JSON.stringify({
           id: event.id,
@@ -118,8 +195,14 @@ async function runTool(action: Record<string, unknown>): Promise<{ toolResult: s
       }
     }
     case 'update_event': {
-      const event = await updateEvent(String(action.eventId), action.changes as Record<string, unknown>)
-      const travelSuggestion = event.location ? await suggestTravelBuffer(event) : null
+      const changes = (action.changes ?? {}) as Record<string, unknown>
+      if (changes.start !== undefined || changes.end !== undefined) {
+        const timeError = validateEventTimes(changes.start, changes.end)
+        if (timeError) return { toolResult: JSON.stringify({ error: timeError }) }
+      }
+      const event = await updateEvent(String(action.eventId), changes)
+      const isTravelBlock = event.summary.startsWith(TRAVEL_BLOCK_PREFIX)
+      const travelSuggestion = event.location && !isTravelBlock ? await suggestTravelBuffer(event) : null
       return {
         toolResult: JSON.stringify({
           id: event.id,
@@ -133,13 +216,20 @@ async function runTool(action: Record<string, unknown>): Promise<{ toolResult: s
       return { toolResult: JSON.stringify(result) }
     }
     case 'find_free_slots': {
+      const timeError = validateEventTimes(action.windowStart, action.windowEnd)
+      if (timeError) return { toolResult: JSON.stringify({ error: timeError }) }
       const slots = await findFreeSlots(new Date(String(action.windowStart)), new Date(String(action.windowEnd)))
       return { toolResult: JSON.stringify(slots) }
     }
     case 'mention_person': {
       const name = String(action.name)
-      const duplicates = await findPossibleDuplicates(name)
-      await recordMention(name)
+      // Order matters: recordMention may silently consolidate a first-name
+      // mention ("Jon") into an existing fuller-name contact ("Jon Smith").
+      // Computing duplicates afterward and excluding that same contact
+      // stops it from being flagged as its own "possible duplicate" on
+      // every future mention once it's already the same record.
+      const contact = await recordMention(name)
+      const duplicates = (await findPossibleDuplicates(name)).filter((d) => d.id !== contact.id)
       if (duplicates.length > 0) {
         return {
           toolResult: JSON.stringify({ recorded: true, possibleDuplicates: duplicates.map((d) => d.name) }),

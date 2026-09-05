@@ -40,6 +40,34 @@ function saveToken(token: StoredToken) {
   localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(token))
 }
 
+const GIS_WAIT_TIMEOUT_MS = 4000
+const GIS_POLL_INTERVAL_MS = 100
+
+/** The GIS script loads with `async defer` (see index.html), so on a slow
+ * connection the very first `requestAccessToken` call at app startup can
+ * run before `window.google` exists yet — that previously rejected
+ * immediately and could bounce a returning user to the sign-in screen for a
+ * timing reason that has nothing to do with actually being signed out.
+ * Poll briefly for the script to finish loading before giving up. */
+function waitForGoogleIdentityServices(): Promise<void> {
+  if (window.google) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const start = Date.now()
+    const check = () => {
+      if (window.google) {
+        resolve()
+        return
+      }
+      if (Date.now() - start > GIS_WAIT_TIMEOUT_MS) {
+        reject(new Error('Google Identity Services script has not loaded yet.'))
+        return
+      }
+      setTimeout(check, GIS_POLL_INTERVAL_MS)
+    }
+    check()
+  })
+}
+
 export function clearToken() {
   localStorage.removeItem(TOKEN_STORAGE_KEY)
 }
@@ -68,9 +96,11 @@ export function isSignedIn(): boolean {
  * when silent refresh isn't possible (e.g. the very first sign-in, or the
  * browser's Google session itself has been signed out).
  */
-export function requestAccessToken(interactive: boolean): Promise<string> {
+export async function requestAccessToken(interactive: boolean): Promise<string> {
   const existing = loadStoredToken()
-  if (existing && !interactive) return Promise.resolve(existing.accessToken)
+  if (existing && !interactive) return existing.accessToken
+
+  await waitForGoogleIdentityServices()
 
   return new Promise((resolve, reject) => {
     if (!window.google) {

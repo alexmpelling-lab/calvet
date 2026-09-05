@@ -5,6 +5,7 @@ import { ChatPanel, type ChatMessage } from './components/ChatPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { isSignedIn, requestAccessToken, signOut, trySilentSignIn } from './auth/google'
 import { isSpeechRecognitionSupported, listenOnce, speak } from './voice/speech'
+import { unlockAudioPlayback } from './voice/audioUnlock'
 import { runAgentTurn, type AgentMessage } from './llm/agent'
 import { getSyncStatus, initSyncEngine, onSyncStatusChange, type SyncStatus } from './calendar/syncEngine'
 
@@ -28,6 +29,7 @@ const STATUS_LABEL: Record<SyncStatus, string> = {
   syncing: 'Syncing…',
   synced: 'Connected · tap to sign out',
   error: 'Some changes need to sync · tap to sign out',
+  'needs-reauth': 'Tap to reconnect Google',
 }
 
 function App() {
@@ -48,10 +50,14 @@ function App() {
     let cancelled = false
     async function restoreSession() {
       if (isSignedIn()) {
-        // Ever granted consent before — restore the session with no visible
-        // prompt. Falls back to the sign-in screen only if the browser's
-        // Google session itself is gone.
-        await trySilentSignIn()
+        // Ever granted consent before — this alone is enough to show the
+        // main app. A silent token refresh is attempted in the background,
+        // but a transient failure here (a slow network, a momentary GIS
+        // hiccup) must never bounce a returning user back to the sign-in
+        // screen — that would break the "log in exactly once" promise for
+        // reasons that have nothing to do with actually being signed out.
+        // Individual calendar calls retry the silent refresh themselves.
+        void trySilentSignIn()
         if (!cancelled) setSignedIn(true)
       }
       if (!cancelled) setCheckingSession(false)
@@ -82,6 +88,17 @@ function App() {
     setSignedIn(false)
     setMessages([])
     historyRef.current = []
+  }
+
+  function handleStatusLineClick() {
+    if (syncStatus === 'needs-reauth') {
+      // This click is a genuine user gesture, so the consent popup Google
+      // requires will actually be allowed to open — unlike the background
+      // sync attempt that got us into this state in the first place.
+      void handleSignIn()
+      return
+    }
+    handleSignOut()
   }
 
   async function processUserText(text: string) {
@@ -117,8 +134,29 @@ function App() {
     }
   }
 
-  async function handleTalkPress() {
-    if (buttonState !== 'idle') return
+  function handleChatSend(text: string) {
+    // Same iOS audio-unlock requirement as the talk button — chat's Send
+    // is just as much a real user gesture and needs the same synchronous
+    // unlock before the async agent turn begins.
+    unlockAudioPlayback()
+    void processUserText(text)
+  }
+
+  function handleTalkPress() {
+    // Unlocking must happen synchronously inside the real click, before any
+    // `await` — on iOS Safari, audio playback tied to a gesture that's
+    // already crossed an async boundary (the LLM call, the natural pause)
+    // can be silently blocked otherwise, leaving Calvet mute with no error.
+    unlockAudioPlayback()
+    void runTalkTurn()
+  }
+
+  async function runTalkTurn() {
+    // Guards against a second turn starting while one is already in
+    // flight — pressing the talk button mid-reply (or mid-chat-send)
+    // previously could kick off a second concurrent agent turn and
+    // interleave conversation history out of order.
+    if (buttonState !== 'idle' || busy) return
     if (!isSpeechRecognitionSupported()) {
       setHint('Voice input is not supported in this browser. Use the chat below instead.')
       setChatOpen(true)
@@ -131,6 +169,8 @@ function App() {
       setButtonState('idle')
       if (transcript.trim()) {
         await processUserText(transcript.trim())
+      } else {
+        setHint("Didn't catch anything — try again.")
       }
     } catch (err) {
       setButtonState('idle')
@@ -158,7 +198,7 @@ function App() {
 
   return (
     <div className="app">
-      <div className="status-line" onClick={handleSignOut} role="button">
+      <div className="status-line" onClick={handleStatusLineClick} role="button">
         {modelStatus || STATUS_LABEL[syncStatus]}
       </div>
       <TalkButton state={buttonState} onPress={handleTalkPress} />
@@ -176,7 +216,7 @@ function App() {
         <ChatPanel
           messages={messages}
           busy={busy}
-          onSend={processUserText}
+          onSend={handleChatSend}
           onClose={() => setChatOpen(false)}
         />
       )}
