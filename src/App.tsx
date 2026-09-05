@@ -108,7 +108,13 @@ function App() {
     setButtonState('thinking')
     if (!modelStatus) setModelStatus('Warming up…')
     try {
-      const result = await runAgentTurn(historyRef.current, text)
+      const result = await runAgentTurn(historyRef.current, text, (fraction) => {
+        // First-ever message downloads a ~1.7GB model with nothing else to
+        // show for it otherwise — a static "Warming up…" for several
+        // minutes on an ordinary connection looks indistinguishable from
+        // being stuck. A live percentage is proof it's actually working.
+        if (fraction > 0) setModelStatus(`Warming up… ${Math.round(fraction * 100)}%`)
+      })
       historyRef.current.push({ role: 'user', content: text }, { role: 'assistant', content: result.reply })
       // A reply that lands instantly reads as robotic — a short, length-scaled
       // pause (with a little jitter) is what makes it feel like someone
@@ -216,6 +222,7 @@ function App() {
         <ChatPanel
           messages={messages}
           busy={busy}
+          statusText={modelStatus}
           onSend={handleChatSend}
           onClose={() => setChatOpen(false)}
         />

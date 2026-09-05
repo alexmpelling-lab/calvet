@@ -10,9 +10,10 @@ interface ChatPanelProps {
   onSend: (text: string) => void
   onClose: () => void
   busy: boolean
+  statusText?: string
 }
 
-export function ChatPanel({ messages, onSend, onClose, busy }: ChatPanelProps) {
+export function ChatPanel({ messages, onSend, onClose, busy, statusText }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -39,7 +40,7 @@ export function ChatPanel({ messages, onSend, onClose, busy }: ChatPanelProps) {
             {m.text}
           </div>
         ))}
-        {busy && <div className="chat-bubble assistant">…</div>}
+        {busy && <div className="chat-bubble assistant">{statusText || '…'}</div>}
         <div ref={messagesEndRef} />
       </div>
       <form className="chat-input-row" onSubmit={handleSubmit}>

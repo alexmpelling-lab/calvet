@@ -393,8 +393,18 @@ async function runToolUnsafe(action: Record<string, unknown>): Promise<{ toolRes
 }
 
 /** Runs the tool-calling loop for one user turn and returns the final spoken reply. */
-export async function runAgentTurn(history: AgentMessage[], userText: string): Promise<AgentTurnResult> {
-  const engine = await loadEngine()
+export async function runAgentTurn(
+  history: AgentMessage[],
+  userText: string,
+  onModelProgress?: (fraction: number) => void
+): Promise<AgentTurnResult> {
+  const engine = await loadEngine((report) => {
+    // report.progress is 0-1 across the whole load (weight download +
+    // compile); showing it is the difference between "Warming up…" sitting
+    // static for several minutes on a ~1.7GB first-time download and an
+    // actual number that proves something is happening.
+    onModelProgress?.(report.progress)
+  })
   const messages: AgentMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT },
     ...history,
