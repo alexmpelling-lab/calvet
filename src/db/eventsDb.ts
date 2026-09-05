@@ -13,6 +13,10 @@ export interface LocalEvent {
   attendees?: { email: string; displayName?: string }[]
   updatedAt: number
   syncStatus: SyncStatus
+  /** True only for events Calvet itself created. Anything pulled in from
+   * Google (created elsewhere — Google Calendar directly, another app, an
+   * invite) is false, and deleting it requires explicit confirmation. */
+  createdByCalvet: boolean
 }
 
 const STORE = 'events'

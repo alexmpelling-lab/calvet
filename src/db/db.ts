@@ -1,7 +1,7 @@
 import { openDB, type IDBPDatabase } from 'idb'
 
 const DB_NAME = 'calvet'
-const DB_VERSION = 2
+const DB_VERSION = 3
 
 let dbPromise: Promise<IDBPDatabase> | null = null
 
@@ -21,6 +21,12 @@ export function getDb(): Promise<IDBPDatabase> {
           const events = db.createObjectStore('events', { keyPath: 'localId' })
           events.createIndex('googleId', 'googleId')
           events.createIndex('syncStatus', 'syncStatus')
+        }
+        if (oldVersion < 3) {
+          const places = db.createObjectStore('places', { keyPath: 'id' })
+          places.createIndex('key', 'key')
+          const travelCache = db.createObjectStore('travelCache', { keyPath: 'id' })
+          travelCache.createIndex('pair', ['fromPlaceId', 'toPlaceId'])
         }
       },
     })

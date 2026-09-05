@@ -2,12 +2,25 @@ import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { TalkButton } from './components/TalkButton'
 import { ChatPanel, type ChatMessage } from './components/ChatPanel'
+import { SettingsPanel } from './components/SettingsPanel'
 import { isSignedIn, requestAccessToken, signOut, trySilentSignIn } from './auth/google'
 import { isSpeechRecognitionSupported, listenOnce, speak } from './voice/speech'
 import { runAgentTurn, type AgentMessage } from './llm/agent'
 import { getSyncStatus, initSyncEngine, onSyncStatusChange, type SyncStatus } from './calendar/syncEngine'
 
 type ButtonState = 'idle' | 'listening' | 'thinking' | 'speaking'
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** A short, reply-length-scaled pause with a little randomness, so a fast
+ * on-device reply doesn't feel like an instant lookup firing back. */
+function naturalPause(replyText: string) {
+  const base = 260 + Math.min(replyText.length * 6, 700)
+  const jitter = Math.random() * 220
+  return sleep(base + jitter)
+}
 
 const STATUS_LABEL: Record<SyncStatus, string> = {
   'signed-out': '',
@@ -23,6 +36,7 @@ function App() {
   const [buttonState, setButtonState] = useState<ButtonState>('idle')
   const [hint, setHint] = useState('')
   const [chatOpen, setChatOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [busy, setBusy] = useState(false)
   const [clarification, setClarification] = useState<string | null>(null)
@@ -79,6 +93,10 @@ function App() {
     try {
       const result = await runAgentTurn(historyRef.current, text)
       historyRef.current.push({ role: 'user', content: text }, { role: 'assistant', content: result.reply })
+      // A reply that lands instantly reads as robotic — a short, length-scaled
+      // pause (with a little jitter) is what makes it feel like someone
+      // actually composed the answer rather than a lookup firing back.
+      await naturalPause(result.reply)
       setMessages((prev) => [...prev, { role: 'assistant', text: result.reply }])
       if (result.clarification) {
         setClarification(
@@ -144,9 +162,14 @@ function App() {
       <TalkButton state={buttonState} onPress={handleTalkPress} />
       <div className="talk-hint">{hint || (buttonState === 'listening' ? 'Listening…' : 'Tap to talk')}</div>
       {clarification && <div className="clarify-banner">{clarification}</div>}
-      <button className="chat-toggle" onClick={() => setChatOpen(true)}>
-        Chat instead
-      </button>
+      <div className="bottom-actions">
+        <button className="chat-toggle" onClick={() => setChatOpen(true)}>
+          Chat instead
+        </button>
+        <button className="settings-toggle" onClick={() => setSettingsOpen(true)} aria-label="Settings">
+          ⚙
+        </button>
+      </div>
       {chatOpen && (
         <ChatPanel
           messages={messages}
@@ -155,6 +178,7 @@ function App() {
           onClose={() => setChatOpen(false)}
         />
       )}
+      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
     </div>
   )
 }

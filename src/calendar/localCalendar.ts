@@ -74,6 +74,7 @@ export async function createEvent(input: {
     attendees: input.attendees,
     updatedAt: Date.now(),
     syncStatus: 'pending-create',
+    createdByCalvet: true,
   }
   await putLocalEvent(record)
   if (isOnline()) void sync()
@@ -99,16 +100,31 @@ export async function updateEvent(id: string, changes: Partial<CalendarEvent>): 
   return toPublicEvent(updated)
 }
 
-export async function deleteEvent(id: string): Promise<void> {
+export type DeleteEventResult =
+  | { status: 'deleted' }
+  | { status: 'needs-confirmation'; summary: string; location?: string }
+  | { status: 'not-found' }
+
+/** Deletes an event. Anything Calvet didn't create itself (an event already
+ * on the calendar, or added by another app/invite) requires `confirmed:
+ * true` — otherwise this returns `needs-confirmation` instead of deleting,
+ * so the agent has to explicitly ask the user first. */
+export async function deleteEvent(id: string, confirmed = false): Promise<DeleteEventResult> {
   const existing = await getLocalEventByAnyId(id)
-  if (!existing) return
+  if (!existing) return { status: 'not-found' }
+
+  if (!existing.createdByCalvet && !confirmed) {
+    return { status: 'needs-confirmation', summary: existing.summary, location: existing.location }
+  }
+
   if (existing.syncStatus === 'pending-create') {
     // Never reached Google — nothing to delete remotely.
     await deleteLocalEvent(existing.localId)
-    return
+    return { status: 'deleted' }
   }
   await putLocalEvent({ ...existing, syncStatus: 'pending-delete', updatedAt: Date.now() })
   if (isOnline()) void sync()
+  return { status: 'deleted' }
 }
 
 export interface FreeBusySlot {
@@ -133,6 +149,30 @@ export async function findFreeSlots(windowStart: Date, windowEnd: Date): Promise
   }
   if (cursor < windowEnd) free.push({ start: cursor.toISOString(), end: windowEnd.toISOString() })
   return free
+}
+
+/** Finds the events immediately before and after the given one, regardless
+ * of the small window `listUpcomingEvents` normally returns — used to spot
+ * back-to-back events at different locations for the travel-buffer check. */
+export async function findAdjacentEvents(event: CalendarEvent): Promise<{ prev?: CalendarEvent; next?: CalendarEvent }> {
+  const all = await getAllLocalEvents()
+  const others = all
+    .filter((e) => e.syncStatus !== 'pending-delete' && effectiveId(e) !== event.id)
+    .map(toPublicEvent)
+    .sort((a, b) => new Date(a.start.dateTime).getTime() - new Date(b.start.dateTime).getTime())
+
+  const eventStart = new Date(event.start.dateTime).getTime()
+  const eventEnd = new Date(event.end.dateTime).getTime()
+
+  let prev: CalendarEvent | undefined
+  let next: CalendarEvent | undefined
+  for (const other of others) {
+    const otherEnd = new Date(other.end.dateTime).getTime()
+    const otherStart = new Date(other.start.dateTime).getTime()
+    if (otherEnd <= eventStart && (!prev || otherEnd > new Date(prev.end.dateTime).getTime())) prev = other
+    if (otherStart >= eventEnd && (!next || otherStart < new Date(next.start.dateTime).getTime())) next = other
+  }
+  return { prev, next }
 }
 
 // Re-exported so callers that genuinely need the raw Google shape (none, by

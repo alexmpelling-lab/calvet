@@ -105,6 +105,9 @@ export async function pullFromGoogle(maxResults = 20): Promise<void> {
       attendees: remote.attendees,
       updatedAt: Date.now(),
       syncStatus: 'synced',
+      // A record with no local history is something that already existed on
+      // Google (or was added elsewhere) — never something Calvet made.
+      createdByCalvet: existing?.createdByCalvet ?? false,
     })
   }
 }
