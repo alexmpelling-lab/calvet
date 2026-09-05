@@ -1,6 +1,6 @@
 import * as webllm from '@mlc-ai/web-llm'
 import { LLM_MODEL_ID } from '../config'
-import { createEvent, deleteEvent, findFreeSlots, listUpcomingEvents, updateEvent } from '../calendar/api'
+import { createEvent, deleteEvent, findFreeSlots, listUpcomingEvents, updateEvent } from '../calendar/localCalendar'
 import { findPossibleDuplicates, recordMention } from '../db/contacts'
 
 const SYSTEM_PROMPT = `You are Calvet, a personal secretary answering an office intercom.

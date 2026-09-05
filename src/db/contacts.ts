@@ -1,4 +1,4 @@
-import { openDB, type IDBPDatabase } from 'idb'
+import { getDb } from './db'
 
 export interface Contact {
   id: string
@@ -9,22 +9,7 @@ export interface Contact {
   lastMentioned: string
 }
 
-const DB_NAME = 'calvet'
 const STORE = 'contacts'
-
-let dbPromise: Promise<IDBPDatabase> | null = null
-
-function getDb() {
-  if (!dbPromise) {
-    dbPromise = openDB(DB_NAME, 1, {
-      upgrade(db) {
-        const store = db.createObjectStore(STORE, { keyPath: 'id' })
-        store.createIndex('name', 'name')
-      },
-    })
-  }
-  return dbPromise
-}
 
 function levenshtein(a: string, b: string): number {
   const dp: number[][] = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0))

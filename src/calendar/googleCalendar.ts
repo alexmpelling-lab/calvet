@@ -12,9 +12,19 @@ export interface CalendarEvent {
   attendees?: { email: string; displayName?: string }[]
 }
 
+// Raw Google Calendar REST calls. The rest of the app never calls these
+// directly — go through `calendar/localCalendar.ts`, which mirrors
+// everything to IndexedDB and queues changes made while offline.
+
 async function authorizedFetch(path: string, init: RequestInit = {}): Promise<Response> {
   let token = getStoredAccessToken()
-  if (!token) token = await requestAccessToken(true)
+  if (!token) {
+    try {
+      token = await requestAccessToken(false)
+    } catch {
+      token = await requestAccessToken(true)
+    }
+  }
 
   const res = await fetch(`${CALENDAR_BASE}${path}`, {
     ...init,
@@ -26,7 +36,13 @@ async function authorizedFetch(path: string, init: RequestInit = {}): Promise<Re
   })
 
   if (res.status === 401) {
-    token = await requestAccessToken(true)
+    // Try a silent refresh first — only fall back to a visible consent
+    // prompt if the browser's Google session itself is gone.
+    try {
+      token = await requestAccessToken(false)
+    } catch {
+      token = await requestAccessToken(true)
+    }
     return fetch(`${CALENDAR_BASE}${path}`, {
       ...init,
       headers: {
@@ -39,7 +55,7 @@ async function authorizedFetch(path: string, init: RequestInit = {}): Promise<Re
   return res
 }
 
-export async function listUpcomingEvents(maxResults = 10): Promise<CalendarEvent[]> {
+export async function listUpcomingEvents(maxResults = 20): Promise<CalendarEvent[]> {
   const params = new URLSearchParams({
     timeMin: new Date().toISOString(),
     maxResults: String(maxResults),
@@ -74,40 +90,7 @@ export async function deleteEvent(eventId: string): Promise<void> {
   const res = await authorizedFetch(`/calendars/primary/events/${eventId}`, {
     method: 'DELETE',
   })
-  if (!res.ok && res.status !== 410) throw new Error(`Failed to delete event: ${res.status}`)
-}
-
-export interface FreeBusySlot {
-  start: string
-  end: string
-}
-
-export async function findFreeSlots(windowStart: Date, windowEnd: Date): Promise<FreeBusySlot[]> {
-  const res = await authorizedFetch('/freeBusy', {
-    method: 'POST',
-    body: JSON.stringify({
-      timeMin: windowStart.toISOString(),
-      timeMax: windowEnd.toISOString(),
-      items: [{ id: 'primary' }],
-    }),
-  })
-  if (!res.ok) throw new Error(`Failed to check free/busy: ${res.status}`)
-  const data = await res.json()
-  const busy: FreeBusySlot[] = data.calendars?.primary?.busy ?? []
-
-  // Derive free gaps between busy blocks within the window.
-  const free: FreeBusySlot[] = []
-  let cursor = windowStart
-  for (const block of busy) {
-    const busyStart = new Date(block.start)
-    if (busyStart > cursor) {
-      free.push({ start: cursor.toISOString(), end: busyStart.toISOString() })
-    }
-    const busyEnd = new Date(block.end)
-    if (busyEnd > cursor) cursor = busyEnd
+  if (!res.ok && res.status !== 410 && res.status !== 404) {
+    throw new Error(`Failed to delete event: ${res.status}`)
   }
-  if (cursor < windowEnd) {
-    free.push({ start: cursor.toISOString(), end: windowEnd.toISOString() })
-  }
-  return free
 }

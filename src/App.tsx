@@ -2,14 +2,24 @@ import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { TalkButton } from './components/TalkButton'
 import { ChatPanel, type ChatMessage } from './components/ChatPanel'
-import { isSignedIn, requestAccessToken, signOut } from './auth/google'
+import { isSignedIn, requestAccessToken, signOut, trySilentSignIn } from './auth/google'
 import { isSpeechRecognitionSupported, listenOnce, speak } from './voice/speech'
 import { runAgentTurn, type AgentMessage } from './llm/agent'
+import { getSyncStatus, initSyncEngine, onSyncStatusChange, type SyncStatus } from './calendar/syncEngine'
 
 type ButtonState = 'idle' | 'listening' | 'thinking' | 'speaking'
 
+const STATUS_LABEL: Record<SyncStatus, string> = {
+  'signed-out': '',
+  offline: 'Offline · changes saved locally',
+  syncing: 'Syncing…',
+  synced: 'Connected · tap to sign out',
+  error: 'Some changes need to sync · tap to sign out',
+}
+
 function App() {
   const [signedIn, setSignedIn] = useState(false)
+  const [checkingSession, setCheckingSession] = useState(true)
   const [buttonState, setButtonState] = useState<ButtonState>('idle')
   const [hint, setHint] = useState('')
   const [chatOpen, setChatOpen] = useState(false)
@@ -17,11 +27,32 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [clarification, setClarification] = useState<string | null>(null)
   const [modelStatus, setModelStatus] = useState('')
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(getSyncStatus())
   const historyRef = useRef<AgentMessage[]>([])
 
   useEffect(() => {
-    setSignedIn(isSignedIn())
+    let cancelled = false
+    async function restoreSession() {
+      if (isSignedIn()) {
+        // Ever granted consent before — restore the session with no visible
+        // prompt. Falls back to the sign-in screen only if the browser's
+        // Google session itself is gone.
+        await trySilentSignIn()
+        if (!cancelled) setSignedIn(true)
+      }
+      if (!cancelled) setCheckingSession(false)
+    }
+    void restoreSession()
+    return () => {
+      cancelled = true
+    }
   }, [])
+
+  useEffect(() => {
+    if (!signedIn) return
+    initSyncEngine()
+    return onSyncStatusChange(setSyncStatus)
+  }, [signedIn])
 
   async function handleSignIn() {
     try {
@@ -87,12 +118,16 @@ function App() {
     }
   }
 
+  if (checkingSession) {
+    return <div className="app" />
+  }
+
   if (!signedIn) {
     return (
       <div className="app">
         <div className="sign-in-screen">
           <h1>Calvet</h1>
-          <p>Sign in with Google to connect your calendar.</p>
+          <p>Sign in with Google to connect your calendar. Just once — after that, Calvet remembers you.</p>
           <button className="google-btn" onClick={handleSignIn}>
             Sign in with Google
           </button>
@@ -104,7 +139,7 @@ function App() {
   return (
     <div className="app">
       <div className="status-line" onClick={handleSignOut} role="button">
-        {modelStatus || 'Connected · tap to sign out'}
+        {modelStatus || STATUS_LABEL[syncStatus]}
       </div>
       <TalkButton state={buttonState} onPress={handleTalkPress} />
       <div className="talk-hint">{hint || (buttonState === 'listening' ? 'Listening…' : 'Tap to talk')}</div>

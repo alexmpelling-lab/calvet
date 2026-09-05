@@ -1,0 +1,45 @@
+import { getDb } from './db'
+
+export type SyncStatus = 'synced' | 'pending-create' | 'pending-update' | 'pending-delete'
+
+export interface LocalEvent {
+  localId: string
+  googleId?: string
+  summary: string
+  description?: string
+  location?: string
+  start: { dateTime: string; timeZone?: string }
+  end: { dateTime: string; timeZone?: string }
+  attendees?: { email: string; displayName?: string }[]
+  updatedAt: number
+  syncStatus: SyncStatus
+}
+
+const STORE = 'events'
+
+export async function getAllLocalEvents(): Promise<LocalEvent[]> {
+  const db = await getDb()
+  return db.getAll(STORE)
+}
+
+export async function getLocalEventByAnyId(id: string): Promise<LocalEvent | undefined> {
+  const db = await getDb()
+  const byLocal = await db.get(STORE, id)
+  if (byLocal) return byLocal
+  return db.getFromIndex(STORE, 'googleId', id)
+}
+
+export async function putLocalEvent(event: LocalEvent): Promise<void> {
+  const db = await getDb()
+  await db.put(STORE, event)
+}
+
+export async function deleteLocalEvent(localId: string): Promise<void> {
+  const db = await getDb()
+  await db.delete(STORE, localId)
+}
+
+export async function getPendingEvents(): Promise<LocalEvent[]> {
+  const all = await getAllLocalEvents()
+  return all.filter((e) => e.syncStatus !== 'synced').sort((a, b) => a.updatedAt - b.updatedAt)
+}

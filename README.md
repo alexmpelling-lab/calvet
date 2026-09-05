@@ -40,22 +40,25 @@ bundled one with an environment variable:
 cp .env.example .env   # set VITE_GOOGLE_CLIENT_ID to your own client ID
 ```
 
-## Deploying to Cloudflare Pages
+## Deploying to Cloudflare
 
-This repo includes a `wrangler.jsonc` for Cloudflare Pages. Easiest path —
-no local Cloudflare credentials needed:
+This repo includes a `wrangler.jsonc` set up for a Workers static-assets
+deploy (Cloudflare's current unified "Workers & Pages" flow, which runs
+`npx wrangler deploy` rather than the older `wrangler pages deploy`).
 
-1. Cloudflare dashboard → **Workers & Pages → Create → Pages → Connect to Git**.
-2. Pick this repo. Build command: `npm run build`. Output directory: `dist`.
-3. Deploy — Cloudflare gives you a `*.pages.dev` URL and redeploys on every push to `main`.
-4. Register a new Google OAuth client (see above) with that `*.pages.dev` URL as
-   an authorized JavaScript origin, and set `VITE_GOOGLE_CLIENT_ID` as an
-   environment variable in the Pages project settings.
+1. Cloudflare dashboard → **Workers & Pages → Create → Connect to Git** → pick this repo.
+2. In the project's **Settings**, set **Build command** to `npm run build`
+   (the deploy command `npx wrangler deploy` reads `wrangler.jsonc`'s
+   `assets.directory` — `./dist` — automatically, no output-directory field needed).
+3. Deploy — Cloudflare gives you a live URL and redeploys on every push to `main`.
+4. Register a new Google OAuth client (see above) with that URL as an
+   authorized JavaScript origin, and set `VITE_GOOGLE_CLIENT_ID` as an
+   environment variable in the project's settings.
 
 Or via CLI, once authenticated (`npx wrangler login`):
 ```bash
 npm run build
-npx wrangler pages deploy dist --project-name calvet
+npx wrangler deploy
 ```
 
 ## Installing on your iPhone
@@ -68,15 +71,44 @@ npx wrangler pages deploy dist --project-name calvet
 
 ## How it works
 
-- `src/auth/google.ts` — Google Identity Services token flow (Calendar scopes only).
-- `src/calendar/api.ts` — direct Google Calendar REST calls (list/create/update/delete
-  events, free/busy lookup for scheduling suggestions).
+- `src/auth/google.ts` — Google Identity Services token flow. Sign-in is a
+  one-time event from the user's perspective: once consent is granted, an
+  "ever signed in" flag persists in `localStorage`, and every future launch
+  silently refreshes the access token behind the scenes (no popup, no click)
+  as long as the browser still has an active Google session. A visible
+  consent screen only reappears if that session itself is gone.
+- `src/calendar/googleCalendar.ts` — raw Google Calendar REST calls. Nothing
+  else in the app calls this directly.
+- `src/db/eventsDb.ts` / `src/db/db.ts` — an IndexedDB mirror of your
+  calendar events, shared with the contacts store in one database.
+- `src/calendar/syncEngine.ts` — the offline-first sync loop: pushes locally
+  queued changes to Google, then pulls the latest events down, merging so a
+  not-yet-synced local edit always wins over a stale server copy. Runs on
+  startup and whenever the browser's `online` event fires.
+- `src/calendar/localCalendar.ts` — the calendar API the rest of the app
+  actually uses. Every read and write goes to the local IndexedDB mirror
+  first — so the app works fully offline — and opportunistically triggers a
+  sync when the network is up. Free/busy lookups are computed entirely from
+  the local mirror.
 - `src/voice/speech.ts` — Web Speech API wrappers for listening and speaking.
 - `src/llm/agent.ts` — the on-device LLM agent loop: a strict system prompt scopes
   it to calendar + contacts only, and it emits small JSON "actions" that the app
   executes as calendar/contact tool calls before producing a final spoken reply.
 - `src/db/contacts.ts` — an IndexedDB-backed contact book that grows as people are
   mentioned, with fuzzy name matching to flag possible duplicates for you to confirm.
+
+## Offline behavior
+
+Every calendar change — create, edit, delete — is written to the local
+IndexedDB mirror immediately and reflected in the UI right away, regardless
+of connectivity. If you're online, that change is pushed to Google Calendar
+in the background at the same time. If you're offline, it's queued with a
+`pending-create` / `pending-update` / `pending-delete` marker and pushed
+automatically the next time the app detects a network connection (listening
+for the browser's `online` event, plus a sync attempt on every launch).
+Reads (agenda listing, free/busy suggestions) always come from the local
+mirror, refreshed from Google first when online — so voice and chat keep
+working uninterrupted through a dropped connection.
 
 ## Notes
 
@@ -85,3 +117,7 @@ npx wrangler pages deploy dist --project-name calvet
   no general internet/knowledge access.
 - All calendar data and contact history stay on your device except for the
   Calendar API calls themselves, which go straight from your browser to Google.
+- The sync engine currently reflects new/changed events from Google, and
+  detects events deleted through this app; an event deleted directly in
+  Google Calendar (outside this app) won't disappear from the local mirror
+  until it ages out of the upcoming-events window.
