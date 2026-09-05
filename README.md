@@ -5,10 +5,18 @@ reads, creates, edits, and deletes Google Calendar events, suggests meeting time
 and quietly keeps track of the people you mention. It refuses everything else.
 
 Runs entirely in your browser: no backend server, no external AI API. Speech
-recognition/synthesis use the browser's built-in Web Speech API, and the "brain"
-is a small open-source LLM (Llama 3.2 3B) run fully client-side via
-[WebLLM](https://github.com/mlc-ai/web-llm) — the only network calls the app makes
-are to the Google Calendar API.
+recognition uses the browser's built-in Web Speech API. Speech output uses
+[Kokoro](https://github.com/hexgrad/kokoro), a small open-weight neural TTS
+model (82M params) run fully client-side via Transformers.js/ONNX Runtime
+Web — noticeably more natural pacing and tone than a browser's built-in
+voice, though (like every realistic in-browser TTS today) it doesn't insert
+literal nonverbal sounds like laughs or coughs; it falls back to the
+browser's built-in voice if the neural model can't load. The "brain" is a
+small open-source LLM (Llama 3.2 3B) run fully client-side via
+[WebLLM](https://github.com/mlc-ai/web-llm), and travel-time estimates use
+OpenStreetMap (Nominatim) for geocoding and OSRM for routing. The only
+network calls the app makes are to the Google Calendar API, Nominatim, and
+OSRM — plus the one-time model downloads, cached by the browser afterwards.
 
 ## Setup
 
@@ -90,12 +98,28 @@ npx wrangler deploy
   first — so the app works fully offline — and opportunistically triggers a
   sync when the network is up. Free/busy lookups are computed entirely from
   the local mirror.
-- `src/voice/speech.ts` — Web Speech API wrappers for listening and speaking.
+- `src/voice/speech.ts` — Web Speech API for listening; speaking prefers the
+  neural voice (`src/voice/kokoroTts.ts`) and falls back to the browser's
+  built-in synthesis if that can't load.
 - `src/llm/agent.ts` — the on-device LLM agent loop: a strict system prompt scopes
-  it to calendar + contacts only, and it emits small JSON "actions" that the app
-  executes as calendar/contact tool calls before producing a final spoken reply.
+  it to calendar, contacts, and travel feasibility only, and it emits small JSON
+  "actions" that the app executes as tool calls before producing a final spoken reply.
 - `src/db/contacts.ts` — an IndexedDB-backed contact book that grows as people are
   mentioned, with fuzzy name matching to flag possible duplicates for you to confirm.
+- `src/travel/places.ts` — a local place memory: geocodes a location the
+  first time it's mentioned (via OpenStreetMap Nominatim, cached locally
+  afterwards) and tracks repeat visits from calendar history.
+- `src/travel/estimate.ts` — travel-time estimates between two places: real
+  routing via OSRM when online, a distance-based estimate offline, both
+  cached locally for 30 days.
+- `src/travel/feasibility.ts` / `src/travel/travelBuffer.ts` — feasibility
+  checks restricted to the transport modes enabled in Settings, and
+  automatic detection of a tight or infeasible gap between two
+  back-to-back, different-location calendar events, offering a ready-to-add
+  travel block.
+- `src/settings/travelSettings.ts` + `src/components/SettingsPanel.tsx` — the
+  per-mode transport toggles (driving/cycling/walking/transit), editable
+  from the gear icon or by asking Calvet directly ("I don't drive").
 
 ## Offline behavior
 
@@ -109,6 +133,15 @@ for the browser's `online` event, plus a sync attempt on every launch).
 Reads (agenda listing, free/busy suggestions) always come from the local
 mirror, refreshed from Google first when online — so voice and chat keep
 working uninterrupted through a dropped connection.
+
+## Delete safety rail
+
+Every event is tagged `createdByCalvet` when it's written. Deleting an
+event Calvet made itself works immediately; deleting anything else —
+already on your calendar, added by another app, or from an invite —
+requires the agent to ask you first and only proceeds once you've
+explicitly agreed in that conversation. There's no way to delete a
+pre-existing event by voice or chat in a single turn.
 
 ## Notes
 

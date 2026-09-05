@@ -24,6 +24,21 @@ export default defineConfig({
       },
       workbox: {
         maximumFileSizeToCacheInBytes: 10 * 1024 * 1024,
+        // The ONNX Runtime WASM binary (used lazily by the neural voice) is
+        // large and only needed after the user first speaks — don't force
+        // it into the eager install-time precache, but do cache it at
+        // runtime once fetched so it's offline-ready after first use.
+        globIgnores: ['**/*.wasm'],
+        runtimeCaching: [
+          {
+            urlPattern: ({ url }) => url.pathname.endsWith('.wasm'),
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'wasm-runtime-cache',
+              expiration: { maxEntries: 10 },
+            },
+          },
+        ],
       },
     }),
   ],

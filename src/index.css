@@ -1,3 +1,25 @@
 :root {
   color-scheme: light;
 }
+
+html {
+  /* Stops double-tap-to-zoom and the iOS "rubber band" text-size jump —
+   * the two biggest tells that this is a browser tab, not an installed app. */
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html,
+body {
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+input,
+textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}

@@ -104,7 +104,9 @@ function App() {
         )
       }
       setButtonState('speaking')
-      await speak(result.reply)
+      await speak(result.reply, (fraction) => {
+        setModelStatus(`Loading voice… ${Math.round(fraction * 100)}%`)
+      })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Something went wrong.'
       setMessages((prev) => [...prev, { role: 'assistant', text: message }])
