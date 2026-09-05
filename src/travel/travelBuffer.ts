@@ -32,7 +32,7 @@ async function checkPair(
   // 11:30pm event followed by one at 12:15am), so it's dropped here.
   if (gapMinutes <= 0 || gapMinutes > MAX_GAP_HOURS * 60) return null
 
-  const report = await checkFeasibility(earlier.location, later.location)
+  const report = await checkFeasibility(earlier.location, later.location, earlier.end.dateTime)
   if (!report.best) return null
 
   const travelMinutes = Math.ceil(report.best.minutes / 5) * 5 // round up to a tidy 5-minute block
@@ -43,11 +43,12 @@ async function checkPair(
   const suggestedStart = new Date(gapStart)
   const suggestedEnd = new Date(gapStart + travelMinutes * 60_000)
   const modeLabel = MODE_LABEL[report.best.mode]
+  const rainNote = report.rainWarning ? ', and it looks like rain' : ''
 
   const fits = travelMinutes <= gapMinutes
   const text = fits
-    ? `Heads up — you've only got ${Math.round(gapMinutes)} min between "${earlier.summary}" and "${later.summary}", and it's about ${travelMinutes} min ${modeLabel} between them. Want me to block that travel time?`
-    : `That's tight — "${later.summary}" starts before you could realistically get there from "${earlier.summary}" (about ${travelMinutes} min ${modeLabel}). Want me to add a travel block and flag it?`
+    ? `Heads up — you've only got ${Math.round(gapMinutes)} min between "${earlier.summary}" and "${later.summary}", and it's about ${travelMinutes} min ${modeLabel} between them${rainNote}. Want me to block that travel time?`
+    : `That's tight — "${later.summary}" starts before you could realistically get there from "${earlier.summary}" (about ${travelMinutes} min ${modeLabel}${rainNote}). Want me to add a travel block and flag it?`
 
   return {
     text,

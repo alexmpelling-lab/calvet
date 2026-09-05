@@ -15,6 +15,8 @@ export interface CalendarEvent {
   start: { dateTime: string; timeZone?: string }
   end: { dateTime: string; timeZone?: string }
   attendees?: { email: string; displayName?: string }[]
+  priority?: 'low' | 'normal' | 'high'
+  cancelable?: boolean
 }
 
 function effectiveId(e: LocalEvent): string {
@@ -30,7 +32,13 @@ function toPublicEvent(e: LocalEvent): CalendarEvent {
     start: e.start,
     end: e.end,
     attendees: e.attendees,
+    priority: e.priority,
+    cancelable: e.cancelable,
   }
+}
+
+function overlaps(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
+  return aStart < bEnd && bStart < aEnd
 }
 
 /** Every calendar read/write in the app goes through here. It always reads
@@ -38,6 +46,11 @@ function toPublicEvent(e: LocalEvent): CalendarEvent {
  * and opportunistically syncs with Google Calendar when the network is up.
  * Nothing calls `googleCalendar.ts` directly except this file and the sync
  * engine's push/pull loop. */
+
+export async function getEventById(id: string): Promise<CalendarEvent | undefined> {
+  const event = await getLocalEventByAnyId(id)
+  return event ? toPublicEvent(event) : undefined
+}
 
 export async function listUpcomingEvents(maxResults = 10): Promise<CalendarEvent[]> {
   if (isOnline()) {
@@ -56,14 +69,18 @@ export async function listUpcomingEvents(maxResults = 10): Promise<CalendarEvent
     .map(toPublicEvent)
 }
 
-export async function createEvent(input: {
+export interface CreateEventInput {
   summary: string
   description?: string
   location?: string
   start: { dateTime: string; timeZone?: string }
   end: { dateTime: string; timeZone?: string }
   attendees?: { email: string; displayName?: string }[]
-}): Promise<CalendarEvent> {
+  priority?: 'low' | 'normal' | 'high'
+  cancelable?: boolean
+}
+
+export async function createEvent(input: CreateEventInput): Promise<CalendarEvent> {
   const record: LocalEvent = {
     localId: crypto.randomUUID(),
     summary: input.summary,
@@ -72,6 +89,8 @@ export async function createEvent(input: {
     start: input.start,
     end: input.end,
     attendees: input.attendees,
+    priority: input.priority,
+    cancelable: input.cancelable,
     updatedAt: Date.now(),
     syncStatus: 'pending-create',
     createdByCalvet: true,
@@ -92,6 +111,8 @@ export async function updateEvent(id: string, changes: Partial<CalendarEvent>): 
     start: changes.start ?? existing.start,
     end: changes.end ?? existing.end,
     attendees: changes.attendees ?? existing.attendees,
+    priority: changes.priority ?? existing.priority,
+    cancelable: changes.cancelable ?? existing.cancelable,
     updatedAt: Date.now(),
     syncStatus: existing.syncStatus === 'pending-create' ? 'pending-create' : 'pending-update',
   }
@@ -173,6 +194,47 @@ export async function findAdjacentEvents(event: CalendarEvent): Promise<{ prev?:
     if (otherStart >= eventEnd && (!next || otherStart < new Date(next.start.dateTime).getTime())) next = other
   }
   return { prev, next }
+}
+
+/** Every non-deleted event that overlaps the given window, excluding one id
+ * (useful when checking whether an edit to an event now collides with
+ * something else). Used for conflict-aware scheduling. */
+export async function findConflicts(
+  start: Date,
+  end: Date,
+  excludeId?: string
+): Promise<CalendarEvent[]> {
+  const all = await getAllLocalEvents()
+  const startMs = start.getTime()
+  const endMs = end.getTime()
+  return all
+    .filter((e) => e.syncStatus !== 'pending-delete' && effectiveId(e) !== excludeId)
+    .filter((e) => overlaps(startMs, endMs, new Date(e.start.dateTime).getTime(), new Date(e.end.dateTime).getTime()))
+    .map(toPublicEvent)
+}
+
+function isSameCalendarDay(isoA: string, isoB: string): boolean {
+  return new Date(isoA).toDateString() === new Date(isoB).toDateString()
+}
+
+/** All non-deleted events on the same calendar day as the given date,
+ * sorted by start time. Used for day-density checks and cascading
+ * reschedules. */
+export async function findEventsOnSameDay(dateISO: string, excludeId?: string): Promise<CalendarEvent[]> {
+  const all = await getAllLocalEvents()
+  return all
+    .filter((e) => e.syncStatus !== 'pending-delete' && effectiveId(e) !== excludeId)
+    .filter((e) => isSameCalendarDay(e.start.dateTime, dateISO))
+    .map(toPublicEvent)
+    .sort((a, b) => new Date(a.start.dateTime).getTime() - new Date(b.start.dateTime).getTime())
+}
+
+/** Every non-deleted event starting at or after the given time, on the same
+ * calendar day — the set a cascading reschedule would shift. */
+export async function findEventsStartingAfter(afterISO: string, excludeId?: string): Promise<CalendarEvent[]> {
+  const afterMs = new Date(afterISO).getTime()
+  const sameDay = await findEventsOnSameDay(afterISO, excludeId)
+  return sameDay.filter((e) => new Date(e.start.dateTime).getTime() >= afterMs)
 }
 
 // Re-exported so callers that genuinely need the raw Google shape (none, by

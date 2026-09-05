@@ -121,6 +121,42 @@ npx wrangler deploy
   per-mode transport toggles (driving/cycling/walking/transit), editable
   from the gear icon or by asking Calvet directly ("I don't drive").
 
+## Scheduling intelligence
+
+All of the following live in `src/scheduling/` and `src/travel/`, and none
+of them are a new surface to learn — they just make create/update/travel
+smarter under the hood:
+
+- **Conflict-aware rescheduling** (`scheduling/conflicts.ts`) — creating an
+  event that collides with something else stops before double-booking and
+  offers either the nearest free slot of the same length, or bumping the
+  conflicting event first if it's tagged low-priority/cancelable.
+- **Meeting-length inference** (`scheduling/durationInference.ts`) — learns
+  how long events with a similar summary have actually run in the past and
+  flags it when a new one looks off from that pattern.
+- **Day-density awareness** (`scheduling/density.ts`) — flags when a day is
+  already stacked (6+ events) and surfaces the largest remaining gap.
+- **Priority/cancelable tagging** — events can carry `priority` and
+  `cancelable`, feeding directly into conflict resolution above.
+- **Multi-leg trip planning** (`travel/tripPlanner.ts`) — given a start and a
+  list of stops, works out a sensible visiting order and chains travel
+  estimates leg to leg.
+- **Weather-aware travel** (`travel/weather.ts`) — free, no-key forecast via
+  Open-Meteo; a likely-rain trip stops recommending cycling/walking as
+  "quickest" without ruling it out.
+- **Lateness pattern memory** (on `Contact`, via `recordLatenessSample`/
+  `getLatenessPadding`) — inferred from same-day reschedules that push a
+  person's events later, not from any real check-in data; only speaks up
+  once there's an established pattern (2+ samples).
+- **Daily briefing** (`scheduling/dailyBriefing.ts`) — "what's my day look
+  like" composes today's agenda, tight travel gaps, and density in one pass.
+- **Location alias memory** (`places.ts`'s `setPlaceAlias`) — explicitly
+  teaching Calvet "the gym means Pure Gym, Baker Street" makes that vague
+  label resolve and accumulate visit history from then on, instead of being
+  silently skipped as too generic to safely geocode on its own.
+- **Cascading reschedule** (`scheduling/cascade.ts`) — moving an anchor
+  event offers to shift every later same-day event by the same delta.
+
 ## Offline behavior
 
 Every calendar change — create, edit, delete — is written to the local

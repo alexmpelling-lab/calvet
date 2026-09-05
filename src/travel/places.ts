@@ -10,6 +10,10 @@ export interface Place {
   visitCount: number
   lastVisited?: string
   updatedAt: number
+  /** When set, this record is just an alias — resolving it always redirects
+   * to the canonical place with this id, so "the gym" and "Pure Gym, Baker
+   * Street" end up sharing one visit history instead of splitting it. */
+  aliasFor?: string
 }
 
 const STORE = 'places'
@@ -141,18 +145,28 @@ export async function ensureGeocoded(place: Place): Promise<Place> {
   }
 }
 
+async function followAlias(place: Place): Promise<Place> {
+  if (!place.aliasFor) return place
+  const db = await getDb()
+  const canonical: Place | undefined = await db.get(STORE, place.aliasFor)
+  return canonical ?? place
+}
+
 /** Resolves free text ("the office", "23 Bell Street") to a known place,
- * geocoding it if this is the first time and we're online. */
+ * geocoding it if this is the first time and we're online, and following
+ * any alias to its canonical place. */
 export async function resolvePlace(query: string): Promise<Place> {
-  const place = await getOrCreatePlace(query)
+  const place = await followAlias(await getOrCreatePlace(query))
   return ensureGeocoded(place)
 }
 
 /** Records that the user is visiting/has visited a place — called whenever
  * a calendar event with a location is created, so Calvet builds up a real
- * picture of repeat visits over time. */
+ * picture of repeat visits over time. Follows an alias first, so visits
+ * under a vague label ("the gym") accumulate on the one real place it's
+ * been pointed at instead of splitting the history. */
 export async function recordVisit(query: string, whenISO?: string): Promise<Place> {
-  const place = await getOrCreatePlace(query)
+  const place = await followAlias(await getOrCreatePlace(query))
   const updated: Place = {
     ...place,
     visitCount: place.visitCount + 1,
@@ -162,6 +176,19 @@ export async function recordVisit(query: string, whenISO?: string): Promise<Plac
   await savePlace(updated)
   if (isOnline()) void ensureGeocoded(updated)
   return updated
+}
+
+/** Explicitly teaches Calvet what a vague label actually means ("the gym"
+ * → "Pure Gym, 12 Baker Street") — geocodes the real address as the
+ * canonical place, then points the vague label's record at it so every
+ * future mention of the vague label resolves and accumulates visits there
+ * instead of being silently skipped (see VAGUE_LABELS) or split apart. */
+export async function setPlaceAlias(alias: string, actualAddress: string): Promise<Place> {
+  const canonical = await ensureGeocoded(await getOrCreatePlace(actualAddress))
+  const aliasPlace = await getOrCreatePlace(alias)
+  const updatedAlias: Place = { ...aliasPlace, aliasFor: canonical.id, updatedAt: Date.now() }
+  await savePlace(updatedAlias)
+  return canonical
 }
 
 export async function getAllPlaces(): Promise<Place[]> {

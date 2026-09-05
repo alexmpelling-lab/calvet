@@ -12,6 +12,12 @@ export interface Contact {
    * merging) "these are different people," the same pair shouldn't keep
    * getting re-asked about on every future mention. */
   dismissedDuplicateNames?: string[]
+  /** Running estimate of how many minutes late this person tends to run,
+   * inferred from how often meetings involving them get pushed later after
+   * being scheduled — never from directly observed arrival data (this app
+   * has none), just a pattern in reschedules. */
+  avgLatenessMinutes?: number
+  latenessSampleCount?: number
 }
 
 const STORE = 'contacts'
@@ -124,11 +130,51 @@ export async function recordMention(name: string, email?: string): Promise<Conta
   return contact
 }
 
+const MAX_LATENESS_SAMPLE_MINUTES = 90
+const MIN_LATENESS_SAMPLES_TO_MENTION = 2
+
+/** Records one instance of a same-day reschedule pushing an event involving
+ * this person later — a proxy for "ran late," since the app has no way to
+ * observe actual arrival time. Ignores implausibly large pushes (more
+ * likely a genuine reschedule to a different day/reason than lateness). */
+export async function recordLatenessSample(name: string, deltaMinutes: number): Promise<void> {
+  if (deltaMinutes <= 0 || deltaMinutes > MAX_LATENESS_SAMPLE_MINUTES) return
+  const contact = await getContactByName(name)
+  if (!contact) return
+  const priorCount = contact.latenessSampleCount ?? 0
+  const priorAvg = contact.avgLatenessMinutes ?? 0
+  const newCount = priorCount + 1
+  const newAvg = (priorAvg * priorCount + deltaMinutes) / newCount
+  await updateContact(contact.id, { avgLatenessMinutes: Math.round(newAvg), latenessSampleCount: newCount })
+}
+
+/** Returns a padding suggestion in minutes if this person has a
+ * well-established pattern of running late, or null if there's not enough
+ * history to say anything — never guesses off one data point. */
+export async function getLatenessPadding(name: string): Promise<number | null> {
+  const contact = await getContactByName(name)
+  if (!contact || (contact.latenessSampleCount ?? 0) < MIN_LATENESS_SAMPLES_TO_MENTION) return null
+  return contact.avgLatenessMinutes ?? null
+}
+
 export async function updateContact(id: string, changes: Partial<Contact>): Promise<void> {
   const db = await getDb()
   const existing = await db.get(STORE, id)
   if (!existing) return
   await db.put(STORE, { ...existing, ...changes })
+}
+
+/** Finds which known contact, if any, is named in a piece of free text
+ * (typically an event summary like "Coffee with Priya"). Used to connect an
+ * event to a contact for lateness tracking without requiring the agent to
+ * separately pass a structured attendee reference. */
+export async function findMentionedContact(text: string): Promise<Contact | undefined> {
+  const all = await listContacts()
+  const lower = text.toLowerCase()
+  return all.find((c) => {
+    const firstName = c.name.toLowerCase().split(' ')[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return firstName.length >= 3 && new RegExp(`\\b${firstName}\\b`).test(lower)
+  })
 }
 
 export async function mergeContacts(keepId: string, mergeId: string): Promise<void> {

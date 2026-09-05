@@ -17,6 +17,11 @@ export interface LocalEvent {
    * Google (created elsewhere — Google Calendar directly, another app, an
    * invite) is false, and deleting it requires explicit confirmation. */
   createdByCalvet: boolean
+  /** How much this event matters, for conflict resolution — a 'low'
+   * priority, cancelable event is what Calvet offers to bump first when a
+   * new event collides with it. Defaults to 'normal'/false when unset. */
+  priority?: 'low' | 'normal' | 'high'
+  cancelable?: boolean
 }
 
 const STORE = 'events'

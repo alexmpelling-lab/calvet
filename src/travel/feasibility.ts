@@ -2,6 +2,7 @@ import { resolvePlace, type Place } from './places'
 import { estimateTravel, type TravelEstimate } from './estimate'
 import { getEnabledModes, TRAVEL_MODES } from '../settings/travelSettings'
 import { isOnline } from '../calendar/syncEngine'
+import { getRainChance } from './weather'
 
 function isGeocoded(place: Place): boolean {
   return place.lat !== undefined && place.lng !== undefined
@@ -15,25 +16,44 @@ export interface FeasibilityReport {
   repeatVisit: boolean
   visitCount: number
   lastVisited?: string
+  rainWarning: boolean
 }
 
 const MODE_LABEL = Object.fromEntries(TRAVEL_MODES.map((m) => [m.mode, m.label.toLowerCase()]))
+const RAIN_THRESHOLD_PERCENT = 60
+const OUTDOOR_MODES = new Set(['cycling', 'walking'])
 
 /** Checks how feasible it is to get from one place to another, restricted
  * to the transport modes enabled in settings, and notes whether the
  * destination is a repeat visit (from calendar history) so the estimate can
- * lean on what's already known about that trip. */
-export async function checkFeasibility(fromQuery: string, toQuery: string): Promise<FeasibilityReport> {
+ * lean on what's already known about that trip. `whenISO`, if given (the
+ * trip's actual departure time — e.g. an adjacent event's end time), lets it
+ * also check the forecast and quietly deprioritize cycling/walking on a
+ * likely-rain trip rather than recommending getting soaked as "quickest." */
+export async function checkFeasibility(fromQuery: string, toQuery: string, whenISO?: string): Promise<FeasibilityReport> {
   const [from, to] = await Promise.all([resolvePlace(fromQuery), resolvePlace(toQuery)])
   const modes = getEnabledModes()
   const online = isOnline()
+
+  let rainWarning = false
+  if (whenISO && online && from.lat !== undefined && from.lng !== undefined) {
+    const rainChance = await getRainChance(from.lat, from.lng, whenISO)
+    rainWarning = rainChance !== null && rainChance >= RAIN_THRESHOLD_PERCENT
+  }
 
   const estimates: TravelEstimate[] = []
   for (const mode of modes) {
     const estimate = await estimateTravel(mode, from, to, online)
     if (estimate) estimates.push(estimate)
   }
-  estimates.sort((a, b) => a.minutes - b.minutes)
+  // Rain doesn't rule out cycling/walking — it just shouldn't win "quickest"
+  // when a covered option exists at a similar cost.
+  estimates.sort((a, b) => {
+    const aPenalized = rainWarning && OUTDOOR_MODES.has(a.mode)
+    const bPenalized = rainWarning && OUTDOOR_MODES.has(b.mode)
+    if (aPenalized !== bPenalized) return aPenalized ? 1 : -1
+    return a.minutes - b.minutes
+  })
 
   return {
     from,
@@ -43,6 +63,7 @@ export async function checkFeasibility(fromQuery: string, toQuery: string): Prom
     repeatVisit: to.visitCount > 0,
     visitCount: to.visitCount,
     lastVisited: to.lastVisited,
+    rainWarning,
   }
 }
 
@@ -74,6 +95,9 @@ export function summarizeFeasibility(report: FeasibilityReport): string {
       .map((e) => `${MODE_LABEL[e.mode]} ~${Math.round(e.minutes)} min`)
       .join(', ')
     line += ` (${rest})`
+  }
+  if (report.rainWarning && OUTDOOR_MODES.has(best.mode)) {
+    line += ' — though it looks like rain around then'
   }
   if (report.repeatVisit) {
     line += `. You've been to ${report.to.label} ${report.visitCount} time${report.visitCount === 1 ? '' : 's'} before`
