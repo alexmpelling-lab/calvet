@@ -13,4 +13,9 @@ export const CALENDAR_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
 ].join(' ')
 
-export const LLM_MODEL_ID = 'Llama-3.2-3B-Instruct-q4f16_1-MLC'
+// mlc-ai/Llama-3.2-3B-Instruct-q4f16_1-MLC (the previous choice) 404s on
+// Hugging Face as of this writing — the repo appears to have been removed
+// or renamed upstream by the MLC team, independent of anything in this app.
+// Qwen2.5-1.5B is also smaller (~1GB vs ~1.7GB download) with a 32k context
+// window, plenty for the short tool-calling JSON this app relies on.
+export const LLM_MODEL_ID = 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC'
