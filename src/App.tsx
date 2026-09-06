@@ -131,7 +131,15 @@ function App() {
         setModelStatus(`Loading voice… ${Math.round(fraction * 100)}%`)
       })
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Something went wrong.'
+      // Never show a raw browser/technical error ("NetworkError when
+      // attempting to fetch resource", a stack-trace-ish message) straight
+      // in the chat log — log it for diagnosis, but say something a
+      // secretary would actually say, and make clear it's safe to retry.
+      console.error('Calvet turn failed:', err)
+      const message =
+        err instanceof TypeError || (err instanceof Error && /network|fetch/i.test(err.message))
+          ? "Sorry, I lost the connection there — mind trying that again?"
+          : "Sorry, something went wrong on my end — could you try that again?"
       setMessages((prev) => [...prev, { role: 'assistant', text: message }])
     } finally {
       setBusy(false)

@@ -117,6 +117,14 @@ export function loadEngine(onProgress?: (report: webllm.InitProgressReport) => v
   if (!enginePromise) {
     enginePromise = webllm.CreateMLCEngine(LLM_MODEL_ID, {
       initProgressCallback: onProgress,
+    }).catch((err) => {
+      // A rejected promise otherwise stays cached forever — one network
+      // blip during the ~1.7GB download would permanently lock the user
+      // out of the on-device brain for the rest of the session, with no
+      // way to recover short of reloading the page. Clearing it here means
+      // the very next message just tries the download again.
+      enginePromise = null
+      throw err
     })
   }
   return enginePromise
