@@ -12,11 +12,22 @@ Web — noticeably more natural pacing and tone than a browser's built-in
 voice, though (like every realistic in-browser TTS today) it doesn't insert
 literal nonverbal sounds like laughs or coughs; it falls back to the
 browser's built-in voice if the neural model can't load. The "brain" is a
-small open-source LLM (Llama 3.2 3B) run fully client-side via
+small open-source LLM (Qwen2.5 1.5B) run fully client-side via
 [WebLLM](https://github.com/mlc-ai/web-llm), and travel-time estimates use
 OpenStreetMap (Nominatim) for geocoding and OSRM for routing. The only
 network calls the app makes are to the Google Calendar API, Nominatim, and
 OSRM — plus the one-time model downloads, cached by the browser afterwards.
+
+**Model weight downloads go through a small Worker proxy** (`worker/index.ts`,
+routed under `/hf-proxy/`, mirrored for local dev in `vite.config.ts`)
+instead of hitting `huggingface.co` directly from the browser. Hugging
+Face's CDN was observed returning a bare 404 with no CORS headers
+specifically for cross-origin fetches carrying an `Origin` header from a
+`*.workers.dev` domain, while the identical URL loaded fine as a normal
+page navigation — consistent with CDN-level bot mitigation treating that
+domain suffix with suspicion. Routing through the Worker means the request
+to Hugging Face happens server-to-server, with no browser CORS involved at
+all. See `src/llm/modelConfig.ts` for how WebLLM is pointed at the proxy.
 
 ## Setup
 

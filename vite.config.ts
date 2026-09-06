@@ -3,6 +3,19 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  server: {
+    proxy: {
+      // Mirrors the Cloudflare Worker's /hf-proxy route (worker/index.ts)
+      // for local dev — same-origin here too, so `npm run dev` sees the
+      // identical CORS-free path production uses instead of a different
+      // code path that only gets exercised once deployed.
+      '/hf-proxy': {
+        target: 'https://huggingface.co',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/hf-proxy/, ''),
+      },
+    },
+  },
   plugins: [
     react(),
     VitePWA({

@@ -1,5 +1,6 @@
 import * as webllm from '@mlc-ai/web-llm'
 import { LLM_MODEL_ID } from '../config'
+import { buildAppConfig } from './modelConfig'
 import {
   createEvent,
   deleteEvent,
@@ -117,6 +118,7 @@ export function loadEngine(onProgress?: (report: webllm.InitProgressReport) => v
   if (!enginePromise) {
     enginePromise = webllm.CreateMLCEngine(LLM_MODEL_ID, {
       initProgressCallback: onProgress,
+      appConfig: buildAppConfig(),
     }).catch((err) => {
       // A rejected promise otherwise stays cached forever — one network
       // blip during the ~1.7GB download would permanently lock the user
